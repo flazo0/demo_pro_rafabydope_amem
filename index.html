@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Showroom FPS — Template (Single File)</title>
+<script src="https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.min.js"></script>
+<style>
+  :root{
+    --bg:#0b0b0d; --panel:#0f1114; --accent:#ff66b2; --muted:#9aa0a6;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);font-family:Inter,Arial,Helvetica,sans-serif; -webkit-user-select:none; user-select:none;}
+  #app{width:100vw;height:100vh;position:relative;overflow:hidden}
+  canvas{display:block}
+
+  /* Crosshair */
+  #crosshair{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:18px;height:18px;z-index:30;pointer-events:none;
+  }
+  #crosshair:before,#crosshair:after{content:"";position:absolute;background:rgba(255,255,255,0.95);}
+  #crosshair:before{left:50%;top:0;width:2px;height:100%;transform:translateX(-50%);}
+  #crosshair:after{top:50%;left:0;width:100%;height:2px;transform:translateY(-50%);}
+
+  /* HUD bottom product */
+  #productHUD{
+    position:absolute;left:50%;transform:translateX(-50%);bottom:18px;background:rgba(0,0,0,0.55);
+    padding:12px 16px;border-radius:10px;color:#fff;display:flex;gap:12px;align-items:center;z-index:40;backdrop-filter:blur(4px);
+    opacity:0;transition:opacity .18s ease;
+  }
+  #productHUD.visible{opacity:1}
+  #productHUD img{width:60px;height:60px;object-fit:cover;border-radius:8px;border:1px solid rgba(255,255,255,0.04)}
+  #productInfos{display:flex;flex-direction:column}
+  #productInfos .name{font-weight:700;font-size:16px}
+  #productInfos .price{color:var(--muted);font-size:14px}
+  #addBtn{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;color:#111;font-weight:800;cursor:pointer}
+
+  /* Cart */
+  #cartBtn{position:absolute;top:16px;right:16px;background:var(--panel);color:#fff;padding:10px 12px;border-radius:10px;z-index:50;border:1px solid rgba(255,255,255,0.03);cursor:pointer}
+  #cartPanel{position:absolute;right:16px;top:60px;width:320px;max-height:70vh;background:var(--panel);padding:12px;border-radius:10px;overflow:auto;z-index:50;display:none;border:1px solid rgba(255,255,255,0.03)}
+  .cartItem{display:flex;gap:10px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);margin-bottom:8px;align-items:center}
+  .cartItem img{width:56px;height:56px;border-radius:6px;object-fit:cover}
+
+  /* Mobile joystick (left bottom) */
+  #joystickBase{
+    position:absolute;left:18px;bottom:18px;width:110px;height:110px;border-radius:999px;background:rgba(255,255,255,0.03);
+    z-index:60;touch-action:none;display:none;align-items:center;justify-content:center;
+  }
+  #joystickThumb{
+    width:44px;height:44px;border-radius:999px;background:rgba(255,255,255,0.12);transform:translate(0,0);
+  }
+
+  /* Look area (right half) - visual hint for mobile */
+  #lookHint{position:absolute;right:0;top:0;width:50%;height:100%;z-index:20}
+
+  /* Responsive rules */
+  @media (max-width:900px){
+    #joystickBase{display:flex}
+    #cartBtn{right:12px;top:12px}
+    #productHUD{left:50%;transform:translateX(-50%);width:92%}
+  }
+  @media (min-width:901px){
+    #joystickBase{display:none}
+  }
+  /* small text */
+  .small{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="crosshair" aria-hidden="true"></div>
+
+<!-- Product HUD -->
+<div id="productHUD" aria-hidden="true">
+  <img id="hudImg" src="" alt="produto">
+  <div id="productInfos">
+    <div class="name" id="hudName">Produto</div>
+    <div class="price" id="hudPrice">R$ 0,00</div>
+  </div>
+  <div style="margin-left:12px">
+    <button id="addBtn">Adicionar</button>
+  </div>
+</div>
+
+<button id="cartBtn">Carrinho (<span id="cartCount">0</span>)</button>
+<div id="cartPanel" aria-hidden="true"></div>
+
+<!-- Joystick for mobile -->
+<div id="joystickBase" aria-hidden="true"><div id="joystickThumb"></div></div>
+<!-- Right half touch for look -->
+<div id="lookHint"></div>
+
+<script>
+/* =======================
+  Showroom FPS — Single File
+  Features:
+  - Corridor showroom (start + end, floor grid, walls)
+  - FPS controls (W forward, S back, A left, D right) fixed
+  - Pointer lock mouse look (desktop)
+  - Mobile joystick (left) + touch-drag look (right)
+  - Crosshair center + HUD bottom with Add-to-cart working
+  - Simple collision with walls and corridor start/end
+  - All in one file
+======================= */
+
+const app = document.getElementById('app');
+const productHUD = document.getElementById('productHUD');
+const hudName = document.getElementById('hudName');
+const hudPrice = document.getElementById('hudPrice');
+const hudImg = document.getElementById('hudImg');
+const addBtn = document.getElementById('addBtn');
+
+const cartBtn = document.getElementById('cartBtn');
+const cartPanel = document.getElementById('cartPanel');
+const cartCount = document.getElementById('cartCount');
+
+const joystickBase = document.getElementById('joystickBase');
+const joystickThumb = document.getElementById('joystickThumb');
+const lookHint = document.getElementById('lookHint');
+
+let cart = JSON.parse(localStorage.getItem('shop_cart')) || [];
+function saveCart(){ localStorage.setItem('shop_cart', JSON.stringify(cart)); renderCartPanel(); updateCartCount(); }
+function updateCartCount(){ cartCount.textContent = cart.length; }
+function renderCartPanel(){
+  cartPanel.innerHTML = '<strong>Seu carrinho</strong><div style="height:8px"></div>';
+  if(cart.length===0){ cartPanel.innerHTML += '<div class="small">Carrinho vazio</div>'; return; }
+  cart.forEach((p,i)=>{
+    cartPanel.innerHTML += `
+      <div class="cartItem">
+        <img src="${p.image}">
+        <div style="flex:1">
+          <div style="font-weight:700">${p.name}</div>
+          <div class="small">${formatBRL(p.price)}</div>
+        </div>
+        <div><button onclick="removeFromCart(${i})" class="small" style="background:none;border:none;color:var(--muted);cursor:pointer">Remover</button></div>
+      </div>
+    `;
+  });
+  cartPanel.innerHTML += `<div style="margin-top:8px;display:flex;justify-content:space-between"><button onclick="clearCart()" class="small">Limpar</button><button onclick="checkout()" style="background:var(--accent);border:none;padding:8px 10px;border-radius:8px;color:#111;font-weight:800">Checkout</button></div>`;
+}
+function removeFromCart(i){ cart.splice(i,1); saveCart(); }
+function clearCart(){ cart = []; saveCart(); }
+function checkout(){ alert('Demo: integrar gateway (Mercado Pago, etc.)'); }
+
+window.removeFromCart = removeFromCart;
+window.clearCart = clearCart;
+window.checkout = checkout;
+
+updateCartCount();
+renderCartPanel();
+
+/* -------------------------
+   Three.js scene
+------------------------- */
+let scene, camera, renderer;
+let produtos = [], produtosData = [];
+let raycaster = new THREE.Raycaster();
+
+const corridor = { width: 20, height: 8, length: 600, startZ: 2, endZ: -600 }; // corridor extents
+
+let yaw = 0, pitch = 0;
+let keys = {};
+const moveSpeed = 0.18;
+let mobileMove = { x:0, z:0 }; // joystick vector
+
+function initScene(){
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0b0d);
+
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 2000);
+  camera.position.set(0, 1.6, corridor.startZ);
+
+  renderer = new THREE.WebGLRenderer({ antialias:true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+  app.appendChild(renderer.domElement);
+
+  // Lights
+  const amb = new THREE.AmbientLight(0xffffff, 0.9);
+  scene.add(amb);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.2);
+  dir.position.set(5,10,5);
+  scene.add(dir);
+
+  // Floor with grid lines
+  const floorGeo = new THREE.PlaneGeometry(corridor.width, corridor.length);
+  const floorMat = new THREE.MeshStandardMaterial({ color:0x111216, metalness:0.1, roughness:0.9 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI/2;
+  floor.position.z = (corridor.startZ + corridor.endZ)/2 - (corridor.length/2 - corridor.length/2);
+  floor.position.y = 0;
+  scene.add(floor);
+
+  // Grid helper to make visible lines on floor
+  const grid = new THREE.GridHelper(corridor.length, corridor.length/2, 0x2b2b2f, 0x26262a);
+  grid.rotation.x = Math.PI/2;
+  grid.position.y = 0.001; // slightly above floor to avoid z-fighting
+  grid.position.z = -corridor.length/2 + corridor.startZ - 2;
+  scene.add(grid);
+
+  // Walls (left / right) and ceiling
+  const wallMat = new THREE.MeshStandardMaterial({ color:0x0f1012, side: THREE.FrontSide });
+  const leftWall = new THREE.Mesh(new THREE.PlaneGeometry(corridor.length, corridor.height), wallMat);
+  leftWall.position.set(-corridor.width/2, corridor.height/2, (corridor.startZ + corridor.endZ)/2);
+  leftWall.rotation.y = Math.PI/2;
+  scene.add(leftWall);
+
+  const rightWall = leftWall.clone();
+  rightWall.position.x = corridor.width/2;
+  rightWall.rotation.y = -Math.PI/2;
+  scene.add(rightWall);
+
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(corridor.width, corridor.length), wallMat);
+  ceiling.rotation.x = Math.PI/2;
+  ceiling.position.y = corridor.height;
+  ceiling.position.z = (corridor.startZ + corridor.endZ)/2;
+  scene.add(ceiling);
+
+  // Entrance sign / start marker
+  const loader = new THREE.TextureLoader();
+  loader.setCrossOrigin('');
+  const entryMat = new THREE.MeshBasicMaterial({ color:0xffffff });
+  const entryGeo = new THREE.BoxGeometry(corridor.width+0.5, 0.5, 0.5);
+  const entry = new THREE.Mesh(entryGeo, entryMat);
+  entry.position.set(0, corridor.height-0.5, corridor.startZ - 4);
+  entry.material.color.setHex(0x1a1a1a);
+  scene.add(entry);
+
+  // End marker
+  const endMat = new THREE.MeshBasicMaterial({ color:0x222222 });
+  const endGeo = new THREE.BoxGeometry(corridor.width+0.5, 0.5, 0.5);
+  const end = new THREE.Mesh(endGeo, endMat);
+  end.position.set(0, corridor.height-0.5, corridor.endZ + 4);
+  end.material.color.setHex(0x121213);
+  scene.add(end);
+
+  // Add product planes along corridor walls
+  createProducts();
+
+  // Events
+  window.addEventListener('resize', onResize);
+  document.addEventListener('keydown', (e)=> { keys[e.key.toLowerCase()] = true; });
+  document.addEventListener('keyup', (e)=> { keys[e.key.toLowerCase()] = false; });
+
+  // Pointer lock for desktop looking
+  renderer.domElement.addEventListener('click', ()=> {
+    if(window.innerWidth > 900){
+      renderer.domElement.requestPointerLock();
+    }
+  });
+  document.addEventListener('pointerlockchange', ()=>{
+    if(document.pointerLockElement === renderer.domElement){
+      document.addEventListener('mousemove', onMouseMove);
+    } else {
+      document.removeEventListener('mousemove', onMouseMove);
+    }
+  });
+
+  // Mobile touch handlers for joystick and look
+  setupMobileControls();
+
+  animate();
+}
+
+function createProducts(){
+  const loader = new THREE.TextureLoader();
+  for(let i=0;i<16;i++){
+    const seed = Math.floor(Math.random()*10000);
+    const img = `https://picsum.photos/seed/${seed}/512/512`;
+    const data = { id:i, name:`Produto ${i+1}`, price: Math.round((Math.random()*140+30)*100)/100, image: img };
+
+    // create plane
+    loader.load(img, tex=>{
+      const ratio = tex.image.width/tex.image.height;
+      const height = 3.6;
+      const width = height * ratio * 0.9;
+      const geom = new THREE.PlaneGeometry(width, height);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent:true });
+      const mesh = new THREE.Mesh(geom, mat);
+
+      const side = (i%2===0) ? -1 : 1;
+      const zPos = - (i* (corridor.length / 16)) - 20;
+      const xPos = side * (corridor.width/2 - 1.6);
+      mesh.position.set(xPos, 1.6 + (Math.random()-0.5)*0.6, zPos);
+      mesh.userData = data;
+      mesh.lookAt(new THREE.Vector3(0, mesh.position.y, mesh.position.z + 10));
+      scene.add(mesh);
+      produtos.push(mesh);
+      produtosData.push(data);
+    });
+  }
+}
+
+function onResize(){
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+/* Mouse look (desktop) */
+function onMouseMove(e){
+  const lookSpeed = 0.0022;
+  yaw -= e.movementX * lookSpeed;
+  pitch -= e.movementY * lookSpeed;
+  pitch = Math.max(-1.2, Math.min(1.2, pitch));
+  camera.rotation.set(pitch, yaw, 0);
+}
+
+/* Mobile controls (virtual joystick on left, look by dragging right half) */
+function setupMobileControls(){
+  let active = false;
+  let startX=0, startY=0;
+  joystickBase.style.display = window.innerWidth <= 900 ? 'flex' : 'none';
+  // joystick pointer events
+  let dragging = false, origin = null;
+  joystickBase.addEventListener('touchstart', (ev)=> {
+    ev.preventDefault();
+    dragging = true;
+    origin = getTouchPos(ev.touches[0], joystickBase);
+    joystickThumb.style.transform = `translate(0px,0px)`;
+  }, {passive:false});
+  window.addEventListener('touchmove', (ev)=> {
+    if(!dragging) return;
+    ev.preventDefault();
+    const t = ev.touches[0];
+    const pos = getTouchPos(t, joystickBase);
+    const dx = pos.x - joystickBase.clientWidth/2;
+    const dy = pos.y - joystickBase.clientHeight/2;
+    const max = joystickBase.clientWidth/2 - joystickThumb.clientWidth/2;
+    const clampedX = Math.max(-max, Math.min(max, dx));
+    const clampedY = Math.max(-max, Math.min(max, dy));
+    joystickThumb.style.transform = `translate(${clampedX}px, ${clampedY}px)`;
+    // Normalize movement vector (y inverted because screen y increases downwards)
+    const nx = clampedX / max;
+    const nz = clampedY / max;
+    // map to world axes (forward/backward = -z)
+    mobileMove.x = nx;
+    mobileMove.z = nz;
+  }, {passive:false});
+  window.addEventListener('touchend', (ev)=> {
+    dragging = false;
+    joystickThumb.style.transform = `translate(0px,0px)`;
+    mobileMove.x = 0; mobileMove.z = 0;
+  });
+
+  // Look by dragging on right half
+  let looking = false;
+  let lastTouchX = 0, lastTouchY = 0;
+  lookHint.addEventListener('touchstart', (ev)=> {
+    looking = true;
+    lastTouchX = ev.touches[0].clientX;
+    lastTouchY = ev.touches[0].clientY;
+  }, {passive:false});
+  lookHint.addEventListener('touchmove', (ev)=> {
+    if(!looking) return;
+    const t = ev.touches[0];
+    const dx = t.clientX - lastTouchX;
+    const dy = t.clientY - lastTouchY;
+    lastTouchX = t.clientX; lastTouchY = t.clientY;
+    const lookSpeed = 0.006;
+    yaw -= dx * lookSpeed;
+    pitch -= dy * lookSpeed;
+    pitch = Math.max(-1.2, Math.min(1.2, pitch));
+    camera.rotation.set(pitch, yaw, 0);
+  }, {passive:false});
+  lookHint.addEventListener('touchend', ()=> { looking = false; });
+}
+function getTouchPos(touch, el){
+  const rect = el.getBoundingClientRect();
+  return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+}
+
+/* Movement and collision */
+function movePlayer(){
+  // Desktop keys (W=forward, S=back, A=left, D=right) - corrected mapping
+  let forward = 0, right = 0;
+  if(keys['w']) forward += 1;
+  if(keys['s']) forward -= 1;
+  if(keys['a']) right -= 1;
+  if(keys['d']) right += 1;
+
+  // Mobile joystick contributes (y is screen down -> positive means move back, so invert)
+  forward += -mobileMove.z;
+  right += mobileMove.x;
+
+  // Normalize
+  const len = Math.hypot(forward, right) || 1;
+  forward /= len; right /= len;
+
+  // Calculate movement in world space from yaw
+  const fx = -Math.sin(yaw) * forward;
+  const fz = -Math.cos(yaw) * forward;
+  const rx = Math.cos(yaw) * right;
+  const rz = -Math.sin(yaw) * right;
+
+  const vx = (fx + rx) * moveSpeed;
+  const vz = (fz + rz) * moveSpeed;
+
+  camera.position.x += vx;
+  camera.position.z += vz;
+
+  // Simple collision: keep camera inside corridor rectangle
+  const halfW = corridor.width/2 - 0.8;
+  camera.position.x = Math.max(-halfW, Math.min(halfW, camera.position.x));
+  // keep within start and end with small margins
+  camera.position.z = Math.max(corridor.endZ + 4, Math.min(corridor.startZ - 1, camera.position.z));
+}
+
+/* Raycast center for product detection (crosshair) */
+let currentTarget = null;
+function raycastCenter(){
+  raycaster.setFromCamera({ x:0, y:0 }, camera);
+  const hits = raycaster.intersectObjects(produtos, false);
+  if(hits.length>0){
+    const obj = hits[0].object;
+    // only show if within reasonable distance
+    if(hits[0].distance < 10){
+      if(currentTarget !== obj){
+        currentTarget = obj;
+        showHUD(obj.userData);
+      }
+      return;
+    }
+  }
+  currentTarget = null;
+  productHUD.classList.remove('visible');
+}
+
+/* HUD show */
+function showHUD(data){
+  hudName.textContent = data.name;
+  hudPrice.textContent = formatBRL(data.price);
+  hudImg.src = data.image;
+  addBtn.onclick = ()=> {
+    cart.push(data);
+    saveCart();
+    // quick feedback
+    productHUD.classList.add('visible');
+    hudName.textContent = data.name + ' • adicionado';
+    setTimeout(()=> { if(currentTarget) showHUD(data); else productHUD.classList.remove('visible'); }, 900);
+  };
+  productHUD.classList.add('visible');
+}
+
+/* Format currency */
+function formatBRL(v){
+  return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+/* Animation loop */
+function animate(){
+  requestAnimationFrame(animate);
+  movePlayer();
+  raycastCenter();
+  renderer.render(scene, camera);
+}
+initScene();
+animate();
+
+/* Utility and helpers */
+function formatBRL(v){
+  return v.toLocaleString('pt-BR',{ style:'currency', currency:'BRL' });
+}
+
+/* Joystick visibility on resize */
+window.addEventListener('resize', ()=> {
+  joystickBase.style.display = window.innerWidth <= 900 ? 'flex' : 'none';
+});
+
+/* Keyboard movement mapping fix: ensure E not used; W forward, S back */
+document.addEventListener('keydown', (e)=> {
+  // ignore if on input (no input in this template, but safe)
+  if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+  keys[e.key.toLowerCase()] = true;
+});
+document.addEventListener('keyup', (e)=> { keys[e.key.toLowerCase()] = false; });
+
+/* Cart button handling */
+cartBtn.addEventListener('click', ()=> {
+  cartPanel.style.display = cartPanel.style.display === 'block' ? 'none' : 'block';
+  renderCartPanel();
+});
+
+/* Utilities */
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+</script>
+</body>
+</html>
